@@ -38,16 +38,15 @@ webpack里可以设置相应的loader来处理这些块，比如`pug-plain-loade
 ```
 
 ## webpack loader基本知识
+vue-loader与webpack loader密切相关，我们首先看一下webpack loader的执行过程。
+
 每个loader上都可以有一个`.pitch`方法，loader的处理过程分为两个阶段，pitch阶段和normal执行阶段：
 
 第一步先进行pitch阶段：会先按顺序执行每个loader的pitch方法；
 
 第二步按相反顺序进行normal执行阶段
 
-如果loader的pitch方法有返回值，则直接掉头往相反顺序执行。
-
-<details>
-<summary>webpack loader执行顺序</summary>
+如果loader的pitch方法有返回值，则直接掉头往相反顺序执行。参考官网例子([pitching loader](https://webpack.docschina.org/api/loaders/#%E8%B6%8A%E8%BF%87-loader-pitching-loader-))：
 
 ```javascript
 module.exports = {
@@ -67,6 +66,8 @@ module.exports = {
 };
 ```
 
+上面例子中各个loader的执行顺序如下：
+
 ```
 |- a-loader `pitch`
   |- b-loader `pitch`
@@ -77,20 +78,22 @@ module.exports = {
 |- a-loader normal execution
 ```
 
+如果b-loader返回了内容，则执行顺序如下：
+
 ```
 |- a-loader `pitch`
   |- b-loader `pitch` returns a module
 |- a-loader normal execution
 ```
 
-</details>
+# vue-loader在webpack流程中的位置
+
+![vue-loader在webpack流程中的位置](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader%E5%9C%A8webpack%E4%B8%AD%E7%9A%84%E4%BD%8D%E7%BD%AE.jpg?raw=true)
+
+图中黄色部分就是vue-loader所涉及的内容，也就是我们这篇文章要分析的。
 
 # 输入与输出
-有了上述知识，我们正式开始vue-loader的源码分析。
 接下来，我们将通过一个例子，来看vue-loader是怎么工作的(这个例子来自vue-loader/example/)。
-
-<details>
-<summary>展开查看例子代码（输入）</summary>
 
 ```javascript
 // main.js
@@ -222,10 +225,8 @@ module.exports = {
   ]
 }
 ```
-</details>
 
-<details>
-<summary>vue-loader输出的代码（输出）</summary>
+对于上述例子，vue-loader的输出结果是：
 
 ```javascript
 // template
@@ -346,7 +347,6 @@ module.exports = {
     component.options.__file = "example/source.vue"
     export default component.exports
 ```
-</details>
 
 # 源码结构
 首先看一下vue-loader源码结构：
@@ -355,9 +355,9 @@ module.exports = {
 vue-loader/lib/
   │
   ├─── codegen/
-  │      ├─── customBlock.js/      生成custom block的js module request
+  │      ├─── customBlock.js/      生成custom block的request
   │      ├─── hotReload.js/        生成热加载的代码
-  │      ├─── styleInjection.js/   生成style的js module request
+  │      ├─── styleInjection.js/   生成style的request
   │      ├─── utils.js/            工具函数
   ├─── loaders/   vue-loader内部定义的loaders
   │      ├─── pitcher.js/          pitcher-loader，将所有的单文件组件里的block请求拦截并转成合适的请求
@@ -373,10 +373,7 @@ vue-loader/lib/
 
 # vue-loader-plugin
 
-在webpack开始执行后，会先合并webpack.config里的配置，接着实例化compiler，然后就去挨个执行所有plugin的apply方法。这里则是执行vue-loader-plugin的apply方法。
-
-<details>
-<summary>webpack源码</summary>
+在webpack开始执行后，会先合并webpack.config里的配置，接着实例化compiler，然后就去挨个执行所有plugin的apply方法。请看webpack这部分源码：
 
 ```javascript
 // webpack/lib/webpack.js
@@ -395,13 +392,8 @@ const webpack = (options, callback) => {
   ...
 }
 ```
-</details>
 
-
-我们在webpack中配置的vue-loader-plugin就是这里的vue-loader/lib/plugin.js，这个是vue-loader强依赖的，如果不配置vue-loader-plugin，就会抛出错误。那么它到底做了哪些事情？
-
-<details>
-<summary>展开plugin.js</summary>
+从例子中看到，我们的webpack配置了vue-loader-plugin，也就是源码里的vue-loader/lib/plugin.js，这是vue-loader强依赖的，如果不配置vue-loader-plugin，就会抛出错误。根据上面wbepack执行过程，在执行vue-loader核心代码之前，会先经过vue-loader-plugin。那么它到底做了哪些事情？
 
 ```javascript
 // vue-loader/lib/plugin.js
@@ -456,28 +448,23 @@ class VueLoaderPlugin {
   }
 }
 
-function createMatcher (fakeFile) {}
+function createMatcher (fakeFile) {/*...*/}
 
-function cloneRule (rule) {}
+function cloneRule (rule) {/*...*/}
 
 VueLoaderPlugin.NS = NS
 module.exports = VueLoaderPlugin
 ```
 
-</details>
-
-从上面源码可以看出，vue-loader-plugin导出的是一个类，并且只包含了一个apply方法。
+从上面源码可以看出，vue-loader-plugin导出的是一个类，并且只包含了一个apply方法。这个apply方法就是被webpack调用的。
 
 apply方法其实就做了3件事：
 
 1. 事件监听：在normalModuleLoader钩子执行前调用代码：loaderContext[NS] = true
-   （每解析一个module，都会用到normalModuleLoader，由于每解析一个module都会有一个新的loaderContext，为保证经过vue-loader执行时不报错，需要在这里标记loaderContext[NS] = true）
+   （每解析一个module，都会用到normalModuleLoader，由于每解析一个module都会有一个新的loaderContext，vue-loader/lib/index.js会判断loaderContext[NS]的值，为保证经过vue-loader执行时不报错，需要在这里标记loaderContext[NS] = true。）
 > 说明：loader中的this是一个叫做loaderContext的对象，这是webpack提供的，是loader的上下文对象，里面包含loader可以访问的方法或属性。
 
-1. 将webpack中配置的rules利用webpack的new RuleSet进行格式化（[rules配置](https://webpack.js.org/configuration/module#modulerules)），并clone一份rules给.vue文件里的每个block使用（具体的涉及到RuleSet，有时间再看）
-
-<details>
-  <summary>展开格式化后的rules</summary>
+2. 将webpack中配置的rules利用webpack的new RuleSet进行格式化（[rules配置](https://webpack.js.org/configuration/module#modulerules)），并clone一份rules给.vue文件里的每个block使用。
 
   ```javascript
       rules = [{
@@ -516,17 +503,17 @@ apply方法其实就做了3件事：
         }]
       }]
   ```
-</details>
 
-3. 在rules里加入vue-loader内部提供的pitcher-loader，同时将原始的rules替换成pitcher-loader、cloneRules、rules
+3. 在rules里加入vue-loader内部提供的rule（暂且称为pitcher-rule），其对应的loader是pitcher-loader，同时将原始的rules替换成pitcher-rule、cloneRules、rules。至于pitcher-rule、pitcher-loader做了什么，我们后面再讲。
+
+放一张图总结下vue-loader-plugin的整体流程：
+
+<img src="https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader-plugin%E6%95%B4%E4%BD%93%E6%B5%81%E7%A8%8B.jpg?raw=true" width = "300" height = "400" />
 
 
 # vue-loader
 
 当webpack加载入口文件main.js时，依赖到了source.vue，webpack内部会匹配source.vue的loaders，发现是vue-loader，然后就会去执行vue-loader([vue-loader/lib/index.js](https://github.com/vuejs/vue-loader/blob/master/lib/index.js))。接下来，我们分析vue-loader的实现过程。
-
-<details>
-<summary>查看vue-loader源码</summary>
 
 ```javascript
 // vue-loader/lib/index.js
@@ -700,79 +687,102 @@ module.exports = function (source) {
   module.exports.VueLoaderPlugin = plugin
 ```
 
-</details>
+vue-loader整体流程图：
 
-整个过程大体可以分为3个阶段。
+<img src="https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader%E6%95%B4%E4%BD%93%E6%B5%81%E7%A8%8B.jpg?raw=true">
+
+可以看出，整个过程大体可以分为3个阶段。
 
 ## 第一阶段
-这一阶段是将.vue文件解析成js module。
+这一阶段是将.vue文件解析成js代码。
 
 1. 会先判断是否加载了vue-loader-plugin，没有则报错
+   ```javascript
+    if (!errorEmitted && !loaderContext['thread-loader'] && !loaderContext[NS]) {
+      // 略
+    }
+   ```
 2. 从loaderContext中获取到模块的信息，比如request、resourcePath、resourceQuery等
+   ```javascript
+    const {
+      target, // 编译的目标，是从webpack配置中传递过来的，默认是'web'，也可以是'node'等
+      request, // 请求的资源的路径（每个资源都有一个路径）
+      minimize, // 是否压缩：true/false，现在已废弃
+      sourceMap, // 是否生成sourceMap: true/false
+      rootContext, // 当前项目绝对路径，对本例子来说是：/Users/zhangxixi/knowledge collect/vue-loader
+      resourcePath, // 资源文件的绝对路径，对本例子来说是：/Users/zhangxixi/knowledge collect/vue-loader/example/source.vue
+      resourceQuery // 资源的 query 参数，也就是问号及后面的，如 ?vue&type=custom&index=0&blockType=foo
+    } = loaderContext
+   ```
 3. 对.vue文件进行parse，其实就是把.vue分成template、script、style、customBlocks这几部分
+   ```javascript
+    const descriptor = parse({
+      source,
+      compiler: options.compiler || loadTemplateCompiler(loaderContext), // 如果loader的options没有配置compiler, 则使用vue-template-compiler
+      filename,
+      sourceRoot,
+      needMap: sourceMap
+    })
+   ```
 
-<details>
-<summary>parse前后对比</summary>
+    这一阶段最关键的就是parse过程，parse前后对比如下：
 
-```javascript
-// parse之前 source是：
-'<template lang="pug">\ndiv(ok)\n  h1(:class="$style.red") hello\n</template>\n\n<script>\nexport default {\n  data () {\n    return {\n      msg: \'fesfff\'\n    }\n  }\n}\n</script>\n\n<style scoped>\n.red {\n  color: red;\n}\n</style>\n\n<foo>\nexport default comp => {\n  console.log(comp.options.data())\n}\n</foo>\n'
+    ```javascript
+    // parse之前 source是：
+    '<template lang="pug">\ndiv(ok)\n  h1(:class="$style.red") hello\n</template>\n\n<script>\nexport default {\n  data () {\n    return {\n      msg: \'fesfff\'\n    }\n  }\n}\n</script>\n\n<style scoped>\n.red {\n  color: red;\n}\n</style>\n\n<foo>\nexport default comp => {\n  console.log(comp.options.data())\n}\n</foo>\n'
 
-// parse之后 得到的结果
-{
-  template:
-    { type: 'template',
-      content: '\ndiv(ok)\n  h1(:class="$style.red") hello\n',
-      start: 21,
-      attrs: { lang: 'pug' },
-      lang: 'pug',
-      end: 62
-    },
-  script:
-    { type: 'script',
-      content:
-      '//\n//\n//\n//\n//\n\nexport default {\n  data () {\n    return {\n      msg: \'fesfff\'\n    }\n  }\n}\n',
-      start: 83,
-      attrs: {},
-      end: 158,
-      map:
-      { version: 3,
-        sources: [Array],
-        names: [],
-        mappings: ';;;;;;AAMA;AACA;AACA;AACA;AACA;AACA;AACA',
-        file: 'source.vue',
-        sourceRoot: 'example',
-        sourcesContent: [Array] }
-    },
-  styles:
-    [ { type: 'style',
-        content: '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n.red {\n  color: red;\n}\n',
-        start: 183,
-        attrs: [Object],
-        scoped: true,
-        end: 207,
-        map: [Object]
-      }
-    ],
-  customBlocks:
-    [ { type: 'foo',
-        content:
-        '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nexport default comp => {\n  console.log(comp.options.data())\n}\n',
-        start: 222,
-        attrs: {},
-        end: 285
-      }
-    ],
-  errors: []
-}
-```
+    // parse之后 得到的结果
+    {
+      template:
+        { type: 'template',
+          content: '\ndiv(ok)\n  h1(:class="$style.red") hello\n',
+          start: 21,
+          attrs: { lang: 'pug' },
+          lang: 'pug',
+          end: 62
+        },
+      script:
+        { type: 'script',
+          content:
+          '//\n//\n//\n//\n//\n\nexport default {\n  data () {\n    return {\n      msg: \'fesfff\'\n    }\n  }\n}\n',
+          start: 83,
+          attrs: {},
+          end: 158,
+          map:
+          { version: 3,
+            sources: [Array],
+            names: [],
+            mappings: ';;;;;;AAMA;AACA;AACA;AACA;AACA;AACA;AACA',
+            file: 'source.vue',
+            sourceRoot: 'example',
+            sourcesContent: [Array] }
+        },
+      styles:
+        [ { type: 'style',
+            content: '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n.red {\n  color: red;\n}\n',
+            start: 183,
+            attrs: [Object],
+            scoped: true,
+            end: 207,
+            map: [Object]
+          }
+        ],
+      customBlocks:
+        [ { type: 'foo',
+            content:
+            '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nexport default comp => {\n  console.log(comp.options.data())\n}\n',
+            start: 222,
+            attrs: {},
+            end: 285
+          }
+        ],
+      errors: []
+    }
+    ```
 
-</details>
+4. 然后区分.vue请求与block请求（请求source.vue就是.vue请求，source.vue里依赖了template、script等block，那么这些依赖会被解析成.source.vue?vue&type=template这种带query的，我们称之为block请求）。如果是.vue请求，则需要生成js module。否则就执行selectBlock。第一阶段是.vue请求，因此会生成js module：分别生成template、script、style、customBlock的请求路径（这里会在query上添加'vue'，比如./source.vue?vue&type=script&lang=js，这会在第二阶段用到）；添加热加载逻辑。
 
-4、在这一步区分.vue请求与block请求。如果是.vue请求，则需要生成js module。否则就执行selectBlock。第一阶段是.vue请求，因此会生成js module：分别生成template、script、style、customBlock的请求路径（这里会在query上添加'vue'，比如./source.vue?vue&type=script&lang=js，这会在第二阶段用到）；添加热加载逻辑。
-
-<details>
-<summary>vue-loader第一阶段生成的js module</summary>
+vue-loader第一阶段生成的js代码如下：
 
 ```javascript
 import { render, staticRenderFns } from "./source.vue?vue&type=template&id=27e4e96e&scoped=true&lang=pug&"
@@ -813,13 +823,13 @@ component.options.__file = "example/source.vue"
 export default component.exports
 ```
 
-</details>
+![vue-loader第一阶段](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader%E7%AC%AC%E4%B8%80%E9%98%B6%E6%AE%B5.jpg?raw=true)
 
 ## 第二阶段
-第一阶段返回的js module交与webpack继续解析，这样就会接着请求所依赖的template、script、style、customBlock。
+第一阶段返回的js代码交与webpack继续解析，代码里的这几个import请求就会被接着进行依赖解析，这样就会接着请求所依赖的template、script、style、customBlock。
 
 我们以template的请求为例：
-`import { render, staticRenderFns } from "./source.vue?vue&type=template&id=27e4e96e&scoped=true&lang=pug&"`，webpack解析出这个module需要的loaders是：pitcher-loader、pug-plain-loader、vue-loader。这里之所以能解析出pitcher-loader，是因为queyr里vue，我们回过头来看一下pitcher-loader的代码，会看到pitcher-loader是通过query是否有vue进行匹配的。
+`import { render, staticRenderFns } from "./source.vue?vue&type=template&id=27e4e96e&scoped=true&lang=pug&"`，webpack解析出这个module需要的loaders是：pitcher-loader、pug-plain-loader、vue-loader。需要哪些loader是webpack内部根据rules来匹配的，这里的rules是经过vue-loader-plugin处理后的。之所以能解析出pitcher-loader，是因为query里含有vue，此时，是时候回过头来看一下vue-loader-plugin中pitcher-rule和pitcher-loader的代码了。
 
 ```javascript
 // vue-loader/lib/plugin.js
@@ -841,14 +851,7 @@ export default component.exports
     // ...
 ```
 
-那我们来看一下vue-loader内部的这个pitcher-loader到底做了什么：
-
-1. 剔除eslint-loader
-2. 剔除pitcher-loader自身
-3. 根据不同的query进行拦截处理，返回对应的内容，跳过后面的loader执行部分
-
-<details>
-<summary>pitcher-loader代码</summary>
+从上面代码可以看到，pitcher-rule是通过resourceQuery中是否有vue进行匹配的。从第一阶段返回的代码中可以看到，template、script、style、custom-block的请求query中都带有vue。所以这个rule就是匹配这几个block请求的。如果匹配到了，那么pitcher-loader就会加入到这些请求需要的loader数组中。pitcher-loader来自于vue-loader/lib/loaders/pitcher.js。那我们来看一下这个pitcher-loader到底做了什么：
 
 ```javascript
 // vue-loader/lib/loaders/pitcher.js
@@ -939,16 +942,20 @@ module.exports.pitch = function (remainingRequest) {
 }
 ```
 
-</details>
+pitcher-loader做了三件事情，最关键的是第三件事情：
 
-对于style的处理，先判断是否有css-loader，有的话就生成一个新的request，这个过程会将vue-loader内部的style-post-loader添加进去，然后返回一个js module。根据pitch的规则，pitcher-loader后面的loader都会被跳过，然后就开始编译这个返回的js module。js module的内容是：
+1. 剔除eslint-loader
+2. 剔除pitcher-loader自身
+3. 根据不同的query进行拦截处理，返回对应的内容，跳过后面的loader执行部分
+
+对于style的处理，先判断是否有css-loader，有的话就生成一个新的request，这个过程会将vue-loader内部的style-post-loader添加进去，然后返回一个js请求。根据pitch的规则，pitcher-loader后面的loader都会被跳过，然后就开始解析这个返回的js请求，它的的内容是：
 
 ```javascript
 import mod from "-!../node_modules/_vue-style-loader@4.1.2@vue-style-loader/index.js!../node_modules/_css-loader@1.0.1@css-loader/index.js!../lib/loaders/stylePostLoader.js!../lib/index.js??vue-loader-options!./source.vue?vue&type=style&index=0&id=27e4e96e&scoped=true&lang=css&";
 export default mod; export * from "-!../node_modules/_vue-style-loader@4.1.2@vue-style-loader/index.js!../node_modules/_css-loader@1.0.1@css-loader/index.js!../lib/loaders/stylePostLoader.js!../lib/index.js??vue-loader-options!./source.vue?vue&type=style&index=0&id=27e4e96e&scoped=true&lang=css&"
 ```
 
-对于template的处理类似，也会生成一个新的request，这个过程会将vue-loader内部提供的template-loader加进去，并返回一个js module：
+对于template的处理类似，也会生成一个新的request，这个过程会将vue-loader内部提供的template-loader加进去，并返回一个js请求：
 
 ```javascript
 export * from "-!../lib/loaders/templateLoader.js??vue-loader-options!../node_modules/_pug-plain-loader@1.0.0@pug-plain-loader/index.js!../lib/index.js??vue-loader-options!./source.vue?vue&type=template&id=27e4e96e&scoped=true&lang=pug&"
@@ -956,17 +963,19 @@ export * from "-!../lib/loaders/templateLoader.js??vue-loader-options!../node_mo
 
 其他block也是类似的。
 
+![vue-loader第二阶段](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader%E7%AC%AC%E4%BA%8C%E9%98%B6%E6%AE%B5.jpg?raw=true)
+
 ## 第三阶段
-经过第二阶段后，会继续解析每个block对应的js module。
+经过第二阶段后，webpack会继续解析每个block对应的js请求。根据这些请求，webpack会匹配到相应的loaders。
 
-对于style：
+对于style，对应的loader是vue-style-loader、css-loader、style-post-loader、vue-loader。执行顺序就是：
 
-会按照vue-style-loader的pitch、css-loader的pitch、style-post-loader的pitch、vue-loader的pitch、vue-loader（分离出style block）、style-post-loader（处理scoped css）、css-loader（处理相关资源的引入路径）、vue-style-loader（动态创建style标签插入css）的顺序执行。
+vue-style-loader的pitch、css-loader的pitch、style-post-loader的pitch、vue-loader的pitch、vue-loader（分离出style block）、style-post-loader（处理scoped css）、css-loader（处理相关资源的引入路径）、vue-style-loader（动态创建style标签插入css）。
 
 
-对于template：
+对于template，对应的loader是template-loader、pug-plain-loader、vue-loader，执行顺序是：
 
-会按照template-loader的pitch、pug-plain-loader的pitch、vue-loader的pitch、vue-loader（分离出template block）、pug-plain-loader（将pug模板转化为html字符串）、template-loader（编译 html 模板字符串，生成 render/staticRenderFns 函数并暴露出去）的顺序执行。
+template-loader的pitch、pug-plain-loader的pitch、vue-loader的pitch、vue-loader（分离出template block）、pug-plain-loader（将pug模板转化为html字符串）、template-loader（编译 html 模板字符串，生成 render/staticRenderFns 函数并暴露出去）。
 
 其他模块类似。
 
@@ -989,11 +998,6 @@ export * from "-!../lib/loaders/templateLoader.js??vue-loader-options!../node_mo
   // ...
 ```
 selectBlock来自select.js，那么我们来看看select.js做了什么：
-
-select.js其实就是根据不同的query类型，将相应的content和map传递给下一个loader。（如果没有下一个loader怎么办呢？）
-
-<details>
-<summary>select.js</summary>
 
 ```javascript
 module.exports = function selectBlock (
@@ -1055,12 +1059,11 @@ module.exports = function selectBlock (
 }
 ```
 
-</details>
+select.js其实就是根据不同的query类型，将相应的content和map传递给下一个loader。
 
 最终生成的代码长什么样？
 
-<details>
-<summary>template最终解析代码</summary>
+template最终解析代码：
 
 ```javascript
 var render = function() {
@@ -1091,32 +1094,23 @@ render._withStripped = true
 
 export { render, staticRenderFns }
 ```
-</details>
 
-<details>
-<summary>style最终解析代码</summary>
+style最终解析代码：
 
 ```javascript
   .red[data-v-27e4e96e] {
     color: red;
   }
 ```
-</details>
 
-
-
-# 整体流程总结
-![style处理过程](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader-1?raw=true)
-
-![template处理过程](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader-2?raw=true)
+![vue-loader第三阶段](https://github.com/xixizhangfe/markdownImages/blob/master/vue-loader%E7%AC%AC%E4%B8%89%E9%98%B6%E6%AE%B5.jpg?raw=true)
 
 
 # 一些有意思的代码实现
 
 ## vue-plugin-loader是如何将rules里配置的规则应用到block里的？
 
-<details>
-<summary>vue-loader-plugin的cloneRules源码</summary>
+vue-loader-plugin的cloneRules源码:
 
 ```javascript
 // vue-loader/lib/plugin.js
@@ -1205,15 +1199,9 @@ compiler.options.module.rules = [
 
 // ...
 ```
-</details>
 
-# 文末寄语
+# 尾声
 本文只是梳理了vue-loader的整体流程，具体源码细节请参考我写的[源码注释](https://github.com/xixizhangfe/vue-loader)
-
-通过这篇文章，希望大家能学习到以下知识：
-1. webpack loader的执行顺序，以及.pitch方法的妙用
-2. vue-loader是如何分别处理不同块的？
-
 
 # 扩展知识
 [webpack RuleSet源码分析](https://github.com/CommanderXL/Biu-blog/issues/30)
